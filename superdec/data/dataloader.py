@@ -141,8 +141,7 @@ class Scene(Dataset):
     def __init__(self, cfg):
         super().__init__()
         self.gt = cfg.scene.gt
-        gt_suffix = "_gt" if self.gt else ""
-        self.path = os.path.join(cfg.scene.path, cfg.scene.name, f"pc{gt_suffix}")
+        self.path = cfg.input_dir
         self.z_up = cfg.scene.z_up 
         self._gather_models()
 
