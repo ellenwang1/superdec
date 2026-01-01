@@ -39,6 +39,8 @@ def main(cfg: DictConfig) -> None:
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
+    print("Dataset length:", len(dataloader.dataset))
+
     with torch.no_grad():
         for i, b in tqdm(enumerate(dataloader)):
             points = b['points'].to(device).float()
