@@ -34,12 +34,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert PLY files to NPZ format")
     parser.add_argument('--input_path', type=str, required=True, help='Path to the directory containing PLY files')
     parser.add_argument('--scene_name', type=str, required=True, help='Name of the scene (used for output directory)')
+    parser.add_argument('--output_dir', type=str, required=True, help="Directory to save NPZ files")
     args = parser.parse_args()
 
     input_path = args.input_path
-    scene_name = args.scene_name
-
-    output_path = os.path.join('data', scene_name, 'pc_gt')
+    output_path = args.output_dir
     os.makedirs(output_path, exist_ok=True)
 
     ply_files = [f for f in os.listdir(input_path) if f.endswith('.ply')]
