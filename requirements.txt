@@ -13,3 +13,12 @@ matplotlib
 open3d
 viser
 gdown
+kaolin==0.18.0
+gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@2323de5905d5e90e035f792fe65bad0fedd413e7
+seaborn==0.13.2
+gradio==5.49.0
+flash_attn==2.8.3
+# pip install --extra-index-url https://miropsota.github.io/torch_packages_builder pytorch3d==0.7.8+pt2.8.0cu128
+MoGe @ git+https://github.com/microsoft/MoGe.git@a8c37341bc0325ca99b9d57981cc3bb2bd3e255b
+opencv-python
+urdf-parser-py
