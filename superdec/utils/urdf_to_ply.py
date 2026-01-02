@@ -1,173 +1,153 @@
+"""
+URDF → per-link point cloud (.ply) exporter (visual mesh only, with world transforms)
+
+Requirements:
+  pip install urdf-parser-py trimesh numpy scipy
+
+Usage:
+  python urdf_to_link_ply.py path/to/robot.urdf output_dir \
+      --package_root path/to/ros_ws/src \
+      --points_per_link 5000
+"""
+
+import os
+import argparse
 import numpy as np
-import time
-import viser
-from urdf_parser_py.urdf import URDF
-from superdec.utils.predictions_handler import PredictionHandler
-from superdec.utils.visualizations import generate_ncolors
-
-RESOLUTION = 30
+import trimesh
+from urdf_parser_py.urdf import URDF, Mesh
+from scipy.spatial.transform import Rotation as R
 
 
-# -------------------------
-# Math utilities
-# -------------------------
+def resolve_mesh_path(filename, urdf_dir, package_root):
+    """Resolve a mesh filename to an absolute path."""
+    if filename.startswith("package://"):
+        if package_root is None:
+            raise ValueError("package:// path but --package_root not provided")
+        rel = filename.replace("package://", "")
+        return os.path.join(package_root, rel)
 
-def rot_from_axis_angle(axis, angle):
-    axis = np.asarray(axis, dtype=float)
-    axis = axis / np.linalg.norm(axis)
-    x, y, z = axis
-    c = np.cos(angle)
-    s = np.sin(angle)
+    if os.path.isabs(filename):
+        return filename
 
-    return np.array([
-        [c + x*x*(1-c), x*y*(1-c) - z*s, x*z*(1-c) + y*s],
-        [y*x*(1-c) + z*s, c + y*y*(1-c), y*z*(1-c) - x*s],
-        [z*x*(1-c) - y*s, z*y*(1-c) + x*s, c + z*z*(1-c)],
-    ])
+    return os.path.join(urdf_dir, filename)
 
 
-def quat_from_rot(R):
-    qw = np.sqrt(max(0.0, 1 + np.trace(R))) / 2.0
-    qx = (R[2, 1] - R[1, 2]) / (4 * qw)
-    qy = (R[0, 2] - R[2, 0]) / (4 * qw)
-    qz = (R[1, 0] - R[0, 1]) / (4 * qw)
-    return (float(qx), float(qy), float(qz), float(qw))
+def mesh_to_pointcloud(mesh_path, n_points):
+    """Load a mesh and sample points from its surface."""
+    mesh = trimesh.load(mesh_path, force="mesh")
+    if mesh.is_empty:
+        raise ValueError(f"Mesh is empty: {mesh_path}")
+    mesh.process(validate=True)
+    return mesh.sample(n_points)
 
 
-# -------------------------
-# Load URDF kinematics
-# -------------------------
-
-def load_urdf_kinematics(urdf_path):
-    robot = URDF.from_xml_file(urdf_path)
-
-    joints = []
-    for joint in robot.joints:
-        if joint.type == "fixed":
-            continue
-
-        origin_xyz = joint.origin.xyz if joint.origin else [0, 0, 0]
-        axis = joint.axis if joint.axis else [0, 0, 1]
-
-        joints.append({
-            "joint_name": joint.name,
-            "parent": joint.parent,
-            "child": joint.child,
-            "axis": axis,
-            "origin": origin_xyz,
-        })
-
-    return joints
+def apply_origin(points, xyz, rpy):
+    """Apply a URDF visual origin transform to a point cloud."""
+    rot = R.from_euler("xyz", rpy).as_matrix()
+    return (rot @ points.T).T + np.array(xyz)
 
 
-# -------------------------
-# Build link → SQ mapping
-# -------------------------
+def joint_to_matrix(joint, joint_angle=0.0):
+    """Compute 4x4 homogeneous transform for a joint."""
+    xyz = np.array(joint.origin.xyz) if joint.origin else np.zeros(3)
+    rpy = np.array(joint.origin.rpy) if joint.origin else np.zeros(3)
+    T = np.eye(4)
+    T[:3, :3] = R.from_euler("xyz", rpy).as_matrix()
+    T[:3, 3] = xyz
 
-def build_link_to_sq_map(predictions_sq):
-    link_to_sqs = {}
-    for idx, name in enumerate(predictions_sq.names):
-        if not predictions_sq.exist[idx]:
-            continue
-        link_to_sqs.setdefault(name, []).append(idx)
-    return link_to_sqs
+    if joint.type == "revolute":
+        axis = np.array(joint.axis)
+        R_joint = R.from_rotvec(joint_angle * axis).as_matrix()
+        T[:3, :3] = T[:3, :3] @ R_joint
+    elif joint.type == "prismatic":
+        axis_local = np.array(joint.axis)
+        T[:3, 3] += T[:3, :3] @ (axis_local * joint_angle)
+    return T
 
 
-# -------------------------
-# MAIN
-# -------------------------
+def compute_link_transform(robot, link_name, joint_angles=None):
+    """Recursively compute world transform of a link (default joint angles = 0)."""
+    if joint_angles is None:
+        joint_angles = {}
+
+    # Base link
+    if link_name == robot.links[0].name:
+        return np.eye(4)
+
+    # Find parent joint
+    parent_joint = next(
+        (j for j in robot.joints if j.child == link_name), None
+    )
+    if parent_joint is None:
+        return np.eye(4)
+
+    parent_T = compute_link_transform(robot, parent_joint.parent, joint_angles)
+    angle = joint_angles.get(parent_joint.name, 0.0)
+    joint_T = joint_to_matrix(parent_joint, angle)
+    return parent_T @ joint_T
+
 
 def main():
-    server = viser.ViserServer()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("urdf", help="Path to URDF file")
+    parser.add_argument("output_dir", help="Directory to save .ply files")
+    parser.add_argument("--package_root", default=None, help="Root dir for package:// meshes")
+    parser.add_argument("--points_per_link", type=int, default=5000, help="Points per link")
+    args = parser.parse_args()
 
-    # ---- Paths ----
-    urdf_path = "data/robots/franka/franka.urdf"
-    npz_path = "data/robots/franka/superquadrics/franka.npz"
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    # ---- Load data ----
-    predictions_sq = PredictionHandler.from_npz(npz_path)
-    meshes = predictions_sq.get_meshes(resolution=RESOLUTION)
-    names = predictions_sq.names
+    robot = URDF.from_xml_file(args.urdf)
+    urdf_dir = os.path.dirname(os.path.abspath(args.urdf))
 
-    urdf_joints = load_urdf_kinematics(urdf_path)
-    link_to_sqs = build_link_to_sq_map(predictions_sq)
+    print(f"Loaded URDF: {robot.name}")
+    print(f"Found {len(robot.links)} links")
 
-    # ---- Add SQs to Viser ----
-    colors = generate_ncolors(len(meshes)) / 255.0
-    sq_handles = {}
-
-    for idx, mesh in enumerate(meshes):
-        if mesh is None or not predictions_sq.exist[idx]:
+    for link in robot.links:
+        if not link.visual:
             continue
 
-        mesh.visual.face_colors = (
-            np.ones((mesh.visual.face_colors.shape[0], 3)) * colors[idx]
-        )
-        mesh.visual.vertex_colors = (
-            np.ones((mesh.visual.vertex_colors.shape[0], 3)) * colors[idx]
-        )
+        visuals = link.visual if isinstance(link.visual, list) else [link.visual]
+        all_points = []
 
-        handle = server.scene.add_mesh_trimesh(
-            name=f"sq_{idx}",
-            mesh=mesh,
-            visible=True,
-        )
-        handle.position = (0.0, 0.0, 0.0)
-        handle.orientation = (0.0, 0.0, 0.0, 1.0)
+        # Compute world transform of this link (all joint angles = 0)
+        T_link = compute_link_transform(robot, link.name)
 
-        sq_handles[idx] = handle
+        for visual in visuals:
+            # Only process Mesh geometry
+            if not isinstance(visual.geometry, Mesh):
+                continue
 
-    # ---- Build runtime kinematic links ----
-    runtime_links = []
-    for joint in urdf_joints:
-        runtime_links.append({
-            "name": joint["child"],
-            "parent": joint["parent"],
-            "axis": joint["axis"],
-            "origin": joint["origin"],
-            "sqs": link_to_sqs.get(joint["child"], []),
-        })
+            # Pick visual mesh (.dae)
+            if not visual.geometry.filename.lower().endswith(".dae"):
+                continue
 
-    # ---- FK storage ----
-    link_world_rot = {}
-    link_world_pos = {}
+            mesh_path = resolve_mesh_path(visual.geometry.filename, urdf_dir, args.package_root)
+            if not os.path.exists(mesh_path):
+                print(f"Warning: mesh file not found: {mesh_path}")
+                continue
 
-    # ---- Animate ----
-    joint_angle = 0.0
+            points = mesh_to_pointcloud(mesh_path, args.points_per_link)
 
-    while True:
-        joint_angle += 0.01
+            # Apply visual origin first
+            if visual.origin is not None:
+                points = apply_origin(points, visual.origin.xyz, visual.origin.rpy)
 
-        for link in runtime_links:
-            name = link["name"]
-            parent = link["parent"]
+            # Transform points into world coordinates
+            points = (T_link[:3, :3] @ points.T).T + T_link[:3, 3]
 
-            R_joint = rot_from_axis_angle(link["axis"], joint_angle)
-            t_joint = np.asarray(link["origin"])
+            all_points.append(points)
 
-            if parent not in link_world_rot:
-                R_world = R_joint
-                t_world = t_joint
-            else:
-                R_parent = link_world_rot[parent]
-                t_parent = link_world_pos[parent]
+        if not all_points:
+            continue
 
-                R_world = R_parent @ R_joint
-                t_world = t_parent + R_parent @ t_joint
+        points = np.vstack(all_points).astype(np.float32)
+        out_path = os.path.join(args.output_dir, f"{link.name}.ply")
 
-            link_world_rot[name] = R_world
-            link_world_pos[name] = t_world
-
-            # Apply transform to ALL SQs of this link
-            for sq_idx in link["sqs"]:
-                sq_handles[sq_idx].position = (
-                    float(t_world[0]),
-                    float(t_world[1]),
-                    float(t_world[2]),
-                )
-                sq_handles[sq_idx].orientation = quat_from_rot(R_world)
-
-        time.sleep(0.03)
+        # Save as PLY
+        cloud = trimesh.PointCloud(points)
+        cloud.export(out_path)
+        print(f"Saved {link.name}: {points.shape[0]} points → {out_path}")
 
 
 if __name__ == "__main__":
