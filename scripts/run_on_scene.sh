@@ -9,7 +9,7 @@ OUTPUT_NPZ_DIR=data/output_npz # path to the folder where to save the output .np
 SCENE_NAME=scene_example # name of the scene (used to name the output .npz file)
 Z_UP=true
 
-python superdec/utils/ply_to_npz.py --input_path="$OBJECTS_SCENE_DIR" --scene_name="$SCENE_NAME"
+python superdec/utils/ply_to_npz.py --input_path="$OBJECTS_SCENE_DIR" --scene_name="$SCENE_NAME" --output_dir="$OUTPUT_NPZ_DIR"
 
 python superdec/evaluate/to_npz.py checkpoints_folder="checkpoints/normalized" output_dir="$OUTPUT_NPZ_DIR" dataset=scene scene.name="$SCENE_NAME" scene.z_up="$Z_UP"
 

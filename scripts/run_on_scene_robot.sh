@@ -4,7 +4,7 @@ set -euo pipefail  # stop on error, undefined variable, or pipeline failure
 # trap to print the failing command
 trap 'echo "Error occurred at command: $BASH_COMMAND"' ERR
 
-ROBOT_NAME=fetch
+ROBOT_NAME=piper
 OBJECTS_SCENE_DIR=data/robots/$ROBOT_NAME/ply
 OUTPUT_NPZ_DIR=data/robots/$ROBOT_NAME/npz # path to the folder where to save the output .npz files
 OUTPUT_SQ_DIR=data/robots/$ROBOT_NAME/superquadrics
