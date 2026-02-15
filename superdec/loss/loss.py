@@ -87,7 +87,8 @@ class Loss(nn.Module):
         self.w_sps = cfg.w_sps
         self.w_ext = cfg.w_ext
         self.w_cub = cfg.w_cub
-        self.w_cd = cfg.w_cd    
+        self.w_cd = cfg.w_cd
+        self.w_containment = getattr(cfg, 'w_containment', 0.0)
 
         self.cos_sim_cubes = nn.CosineSimilarity(dim=4, eps=1e-4) 
 
@@ -165,6 +166,35 @@ class Loss(nn.Module):
         entropy = loss(exist.squeeze(-1), gt)
         return entropy
 
+    def compute_containment_loss(self, pc_inver, out_dict):
+        """Penalize points that fall outside their assigned superquadric."""
+        scale = out_dict['scale']       # [B, P, 3]
+        shape = out_dict['shape']       # [B, P, 2]
+        weights = out_dict['assign_matrix']  # [B, P, N]
+
+        # pc_inver: [B, P, N, 3] — points in each primitive's local frame
+        e1 = shape[:, :, 0:1].unsqueeze(2)  # [B, P, 1, 1]
+        e2 = shape[:, :, 1:2].unsqueeze(2)
+
+        a1 = scale[:, :, 0:1].unsqueeze(2)
+        a2 = scale[:, :, 1:2].unsqueeze(2)
+        a3 = scale[:, :, 2:3].unsqueeze(2)
+
+        # Implicit function (matches get_occupancy)
+        eps = 1e-6
+        t1 = torch.pow(torch.clamp((pc_inver[..., 0:1] / a1) ** 2, min=eps), 1.0 / e1)
+        t2 = torch.pow(torch.clamp((pc_inver[..., 1:2] / a2) ** 2, min=eps), 1.0 / e2)
+        a = torch.pow(torch.clamp(t1 + t2, min=eps), e1 / (e1 + e2))
+        b = torch.pow(torch.clamp((pc_inver[..., 2:3] / a3) ** 2, min=eps), 1.0 / e1)
+        F_val = (a + b - 1).squeeze(-1)  # [B, P, N]
+
+        # Hinge: only penalize points outside (F > 0)
+        outside_penalty = torch.relu(F_val) ** 2  # [B, P, N]
+
+        # Weight by assignment matrix
+        loss = (outside_penalty * weights).sum(-1).mean()
+        return loss
+
     def get_sparsity_loss(self, assign_matrix):
         num_points = assign_matrix.shape[1]
         norm_05 = (assign_matrix.sum(1)/num_points + 0.01).sqrt().mean(1).pow(2)
@@ -198,6 +228,11 @@ class Loss(nn.Module):
             sparsity_loss = self.get_sparsity_loss(out_dict['assign_matrix'])
             loss += self.w_sps * sparsity_loss
             loss_dict['sparsity_loss'] = sparsity_loss.item()
+
+        if self.w_containment > 0:
+            containment_loss = self.compute_containment_loss(pc_inver, out_dict)
+            loss += self.w_containment * containment_loss
+            loss_dict['containment_loss'] = containment_loss.item()
 
         loss_dict['expected_prim_num'] = out_dict['exist'].squeeze(-1).sum(-1).mean().data.detach().item()
         loss_dict['all'] = loss.item()

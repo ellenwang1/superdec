@@ -12,7 +12,8 @@ _backend = load(name='_pvcnn_backend',
                     'interpolate/trilinear_devox.cpp',
                     'interpolate/trilinear_devox.cu',
                     'bindings.cpp',
-                ]]
+                ]],
+                with_cuda=False
                 )
 
 __all__ = ['_backend']

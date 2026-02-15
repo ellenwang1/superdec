@@ -86,6 +86,7 @@ loss:
   w_ext: 0.01 #0.01 
   w_cub: 1.0 #1.0 
   w_cd: 1.0
-  
+  w_containment: 0.0  # >0 enables conservative fitting (all points inside SQs)
+
 visualization:
   res_primitives: 40
